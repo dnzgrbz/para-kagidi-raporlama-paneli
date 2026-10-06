@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel Sıralamalı & Otomatik Toplamlı Panel</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Stil Destekli Excel Kütüphanesi (xlsx-js-style) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
+    <style>
+        body { background-color: #f8f9fa; padding-top: 30px; }
+        .card { border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .table-responsive { max-height: 550px; overflow-y: auto; }
+        .manual-a1-input { max-width: 200px; background-color: #fffde7; font-weight: bold; }
+        .header-filter-select { font-size: 0.8rem; padding: 2px 4px; margin-top: 4px; border: 1px solid #6c757d; }
+        .sum-row { background-color: #d1e7dd !important; font-size: 0.95rem; }
+        .mapping-box { background-color: #f1f3f5; border: 1px dashed #ced4da; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid px-4">
+    <div class="card p-4 mb-4">
+        <h3 class="card-title text-primary mb-3">📊 Excel Sıralamalı & Otomatik Toplamlı Panel</h3>
+        <p class="text-muted">
+            <b>1. Satır (A1):</b> Elle Veri Girişi | 
+            <b>2. Satır (A2:AA2):</b> Kalın Punto | 
+            <b>Sadece Veri Satırları:</b> İndirilen Excel'de Tüm Kenarlıklar Çerçeveli | 
+            <b>Sütun Toplamları:</b> Q, R, S, T, U, V, W, X, Y, Z, AA toplamları en alt satıra yazılır.
+        </p>
+        
+        <div class="row g-3 align-items-center mb-3">
+            <div class="col-md-8">
+                <input type="file" id="excelFile" class="form-control" accept=".xlsx, .xls, .xlsb" onchange="dosyaSecildi(event)">
+            </div>
+            <div class="col-md-4 d-flex gap-2">
+                <button onclick="excelIsle()" id="islemBtn" class="btn btn-success w-100" disabled>İşle ve Göster</button>
+                <button id="downloadBtn" onclick="excelIndir()" class="btn btn-outline-primary w-100" disabled>Excel İndir</button>
+            </div>
+        </div>
+
+        <!-- Dinamik Sütun Eşleştirme Alanı -->
+        <div id="mappingSection" class="mapping-box p-3 d-none">
+            <h6 class="text-secondary mb-2">⚙️ Sütun Eşleştirme (Yazarak veya Seçerek Eşleştirin)</h6>
+            <p class="small text-muted mb-3">Kutucukların üzerine tıklayıp yazmaya başlayarak Excel sütunlarını hızla filtreleyip seçebilirsiniz:</p>
+            <div id="mappingContainer" class="row g-2"></div>
+        </div>
+    </div>
+
+    <!-- Sonuç Tablosu Panel Alanı -->
+    <div class="card p-4" id="resultCard">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5 class="m-0">📋 Filtrelenen Veri Önizleme (<span id="rowCount">0</span> Satır Gösteriliyor)</h5>
+            <button onclick="filtreleriTemizle()" class="btn btn-sm btn-outline-secondary">Tüm Filtreleri Sıfırla</button>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-bordered table-striped table-hover text-nowrap align-middle" id="previewTable">
+                <thead class="table-dark" id="tableHead"></thead>
+                <tbody id="tableBody"></tbody>
+                <tfoot id="tableFoot"></tfoot>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    const hedefSutunlar = ["A", "B", "C", "F", "G", "H", "J", "L", "O", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "AA"];
+    const toplamSutunlari = ["Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "AA"];
+
+    const varsayilanBasliklar = {
+        "A": "Düzenleme Tarihi",
+        "B": "Seri No",
+        "C": "İrsaliye No",
+        "F": "URUN-ADI",
+        "G": "Teslim İl",
+        "H": "Araç Plakası",
+        "J": "SATICI MÜŞTERİ ADI",
+        "L": "Sevk Müşteri",
+        "O": "Sevk-Yeri-Net-Ağırlık",
+        "Q": "Kdv Hariç Tutar",
+        "R": "Kdv-Tutari",
+        "S": "Kdv Dahil Tutar",
+        "T": "Tevkifat Oranı",
+        "U": "Tevkifat-Edilecek-Kdv",
+        "V": "Tevkifat-Haric-Tutar",
+        "W": "Şöför Birim Fiyat",
+        "X": "Nakit Avans",
+        "Y": "Alınan-Ön-Ödeme",
+        "Z": "Ödenecek Bakiye",
+        "AA": "Bakiye Tutar"
+    };
+
+    let hamExcelVerisi = [];
+    let excelSutunBasliklari = [];
+    let islenmisVeri = [];
+    let orijinalDosyaAdi = "Aktarilan_Veriler.xlsx";
+    let hesaplananToplamlar = {};
+
+    window.onload = function() {
+        bosTabloyuCiz();
+    };
+
+    function bosTabloyuCiz() {
+        const thead = document.getElementById('tableHead');
+        const tbody = document.getElementById('tableBody');
+        const tfoot = document.getElementById('tableFoot');
+        
+        let headHtml = "<tr><th>Satır No</th>";
+        for (let c = 0; c < hedefSutunlar.length; c++) {
+            let harf = hedefSutunlar[c];
+            let baslikAdi = varsayilanBasliklar[harf];
+            
+            headHtml += `
+                <th>
+                    <div>${baslikAdi}</div>
+                    <select class="form-select header-filter-select" disabled>
+                        <option value="">(Tümü)</option>
+                    </select>
+                </th>`;
+        }
+        headHtml += "</tr>";
+        thead.innerHTML = headHtml;
+
+        let row1Html = `<tr class="table-warning"><td><b>1 (A1 Giriş)</b></td>`;
+        row1Html += `<td><input type="text" class="form-control form-control-sm manual-a1-input" placeholder="Dosya Yükleyiniz..." disabled></td>`;
+        
+        for (let c = 1; c < hedefSutunlar.length; c++) {
+            row1Html += `<td class="text-muted small"><i>-</i></td>`;
+        }
+        row1Html += "</tr>";
+        
+        row1Html += `<tr><td colspan="${hedefSutunlar.length + 1}" class="text-center text-muted py-4">Lütfen bir Excel dosyası seçin, sütunları eşleştirip "İşle ve Göster" butonuna tıklayın.</td></tr>`;
+        
+        tbody.innerHTML = row1Html;
+        tfoot.innerHTML = "";
+    }
+
+    function dosyaSecildi(event) {
+        const fileInput = event.target;
+        if (!fileInput.files.length) return;
+
+        const secilenDosya = fileInput.files[0];
+        orijinalDosyaAdi = secilenDosya.name;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+
+            hamExcelVerisi = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: "" });
+
+            if (hamExcelVerisi.length === 0) {
+                alert("Dosyada veri bulunamadı.");
+                return;
+            }
+
+            let headerRow = hamExcelVerisi[0] || [];
+            excelSutunBasliklari = headerRow.map((val, idx) => {
+                let harfKarsiligi = sutunIndeksindenHarfe(idx);
+                return { index: idx, name: (val !== "" ? String(val) : `Sütun ${harfKarsiligi} (Idx ${idx})`) };
+            });
+
+            eslestirmeArayuzunuOlustur();
+            document.getElementById('mappingSection').classList.remove('d-none');
+            document.getElementById('islemBtn').disabled = false;
+        };
+
+        reader.readAsArrayBuffer(secilenDosya);
+    }
+
+    function sutunIndeksindenHarfe(colIndex) {
+        let temp, letter = '';
+        colIndex++;
+        while (colIndex > 0) {
+            temp = (colIndex - 1) % 26;
+            letter = String.fromCharCode(temp + 65) + letter;
+            colIndex = (colIndex - temp - 1) / 26;
+        }
+        return letter;
+    }
+
+    function eslestirmeArayuzunuOlustur() {
+        const container = document.getElementById('mappingContainer');
+        container.innerHTML = "";
+
+        hedefSutunlar.forEach((hedefHarf, index) => {
+            let hedefBaslik = varsayilanBasliklar[hedefHarf];
+            
+            let enIyiEslesmeIndex = "";
+            let enIyiEslesmeText = "";
+            excelSutunBasliklari.forEach(col => {
+                let cleanColName = col.name.toLowerCase();
+                let cleanTargetName = hedefBaslik.toLowerCase();
+                if (cleanColName.includes(cleanTargetName) || cleanColName === hedefHarf.toLowerCase()) {
+                    enIyiEslesmeIndex = col.index;
+                    enIyiEslesmeText = `${col.name} (Sütun ${sutunIndeksindenHarfe(col.index)})`;
+                }
+            });
+
+            let datalistId = `list_${hedefHarf}_${index}`;
+            let optionsHtml = "";
+            excelSutunBasliklari.forEach(col => {
+                let text = `${col.name} (Sütun ${sutunIndeksindenHarfe(col.index)})`;
+                optionsHtml += `<option value="${text}" data-index="${col.index}"></option>`;
+            });
+
+            let initialInputValue = enIyiEslesmeText;
+
+            let colDiv = document.createElement('div');
+            colDiv.className = "col-md-3 col-sm-6";
+            colDiv.innerHTML = `
+                <div class="p-2 border bg-white rounded">
+                    <label class="form-label small fw-bold text-primary mb-1">${hedefBaslik}</label>
+                    <input class="form-control form-control-sm mapping-input" 
+                           list="${datalistId}" 
+                           data-target="${hedefHarf}" 
+                           value="${initialInputValue}" 
+                           placeholder="Yazarak arayın veya seçin...">
+                    <datalist id="${datalistId}">
+                        ${optionsHtml}
+                    </datalist>
+                </div>
+            `;
+            container.appendChild(colDiv);
+        });
+    }
+
+    function sayiyaCevir(val) {
+        if (val === null || val === undefined || val === "") return Infinity;
+        if (typeof val === 'number') return val;
+        
+        let str = String(val).trim().replace(/\./g, '').replace(',', '.');
+        let num = parseFloat(str);
+        return isNaN(num) ? Infinity : num;
+    }
+
+    function excelIsle() {
+        if (hamExcelVerisi.length === 0) {
+            alert("Lütfen önce geçerli bir Excel dosyası yükleyin!");
+            return;
+        }
+
+        let mapping = {};
+        document.querySelectorAll('.mapping-input').forEach(input => {
+            let targetHarf = input.getAttribute('data-target');
+            let typedVal = input.value.trim();
+            
+            let matchedColIndex = null;
+            excelSutunBasliklari.forEach(col => {
+                let fullText = `${col.name} (Sütun ${sutunIndeksindenHarfe(col.index)})`;
+                if (fullText.toLowerCase() === typedVal.toLowerCase() || col.name.toLowerCase() === typedVal.toLowerCase()) {
+                    matchedColIndex = col.index;
+                }
+            });
+
+            mapping[targetHarf] = matchedColIndex;
+        });
+
+        islenmisVeri = [];
+
+        let bosIlkSatir = new Array(hedefSutunlar.length).fill("");
+        islenmisVeri.push(bosIlkSatir);
+
+        let baslikSatiri = hedefSutunlar.map(harf => varsayilanBasliklar[harf]);
+        islenmisVeri.push(baslikSatiri);
+
+        let veriler = [];
+        for (let r = 1; r < hamExcelVerisi.length; r++) {
+            let row = hamExcelVerisi[r];
+            let newRow = [];
+
+            hedefSutunlar.forEach(harf => {
+                let sourceIdx = mapping[harf];
+                let val = (sourceIdx !== null && sourceIdx !== undefined && row[sourceIdx] !== undefined) ? row[sourceIdx] : "";
+                newRow.push(val);
+            });
+
+            veriler.push(newRow);
+        }
+
+        const cColIdx = hedefSutunlar.indexOf("C");
+        veriler.sort((a, b) => {
+            let numA = sayiyaCevir(a[cColIdx]);
+            let numB = sayiyaCevir(b[cColIdx]);
+            return numA - numB;
+        });
+
+        veriler.forEach(row => islenmisVeri.push(row));
+
+        tabloyuCiz();
+        document.getElementById('downloadBtn').disabled = false;
+    }
+
+    function tabloyuCiz() {
+        const thead = document.getElementById('tableHead');
+        const tbody = document.getElementById('tableBody');
+        
+        thead.innerHTML = "";
+        tbody.innerHTML = "";
+
+        if (islenmisVeri.length < 2) return;
+
+        let headHtml = "<tr><th>Satır No</th>";
+        
+        for (let c = 0; c < hedefSutunlar.length; c++) {
+            let harf = hedefSutunlar[c];
+            let baslikAdi = varsayilanBasliklar[harf];
+            
+            let uniqueVals = new Set();
+            for (let r = 2; r < islenmisVeri.length; r++) {
+                if (islenmisVeri[r][c] !== "") {
+                    uniqueVals.add(String(islenmisVeri[r][c]));
+                }
+            }
+
+            let optionsHtml = `<option value="">(Tümü)</option>`;
+            Array.from(uniqueVals).sort().forEach(val => {
+                optionsHtml += `<option value="${val}">${val}</option>`;
+            });
+
+            headHtml += `
+                <th>
+                    <div>${baslikAdi} ${harf === 'C' ? '▲' : ''}</div>
+                    <select class="form-select header-filter-select" data-col="${c}" onchange="tabloyuFiltrele()">
+                        ${optionsHtml}
+                    </select>
+                </th>`;
+        }
+        headHtml += "</tr>";
+        thead.innerHTML = headHtml;
+
+        let currentA1Val = islenmisVeri[0][0] || "";
+        let row1Html = `<tr class="table-warning" id="row_1"><td><b>1 (A1 Giriş)</b></td>`;
+        row1Html += `<td><input type="text" class="form-control form-control-sm manual-a1-input" value="${currentA1Val}" oninput="a1VerisiGuncelle(this.value)" placeholder="A1 Verisi Gir..."></td>`;
+        
+        for (let c = 1; c < hedefSutunlar.length; c++) {
+            row1Html += `<td class="text-muted small"><i>-</i></td>`;
+        }
+        row1Html += "</tr>";
+        tbody.innerHTML += row1Html;
+
+        for (let r = 2; r < islenmisVeri.length; r++) {
+            let trHtml = `<tr class="data-row" id="row_${r}"><td>${r}</td>`;
+            for (let c = 0; c < islenmisVeri[r].length; c++) {
+                trHtml += `<td>${islenmisVeri[r][c]}</td>`;
+            }
+            trHtml += "</tr>";
+            tbody.innerHTML += trHtml;
+        }
+
+        tabloyuFiltrele();
+    }
+
+    function tabloyuFiltrele() {
+        const selects = document.querySelectorAll('.header-filter-select');
+        let selectedFilters = {};
+
+        selects.forEach(select => {
+            const colIndex = select.getAttribute('data-col');
+            let val = select.value;
+            if (val !== "") {
+                selectedFilters[colIndex] = val;
+            }
+        });
+
+        let visibleCount = 0;
+        hesaplananToplamlar = {};
+        hedefSutunlar.forEach((sutunHarf, colIdx) => {
+            if (toplamSutunlari.includes(sutunHarf)) {
+                hesaplananToplamlar[colIdx] = 0;
+            }
+        });
+
+        for (let r = 2; r < islenmisVeri.length; r++) {
+            const rowElement = document.getElementById(`row_${r}`);
+            if (!rowElement) continue;
+
+            let matches = true;
+            for (let colIdx in selectedFilters) {
+                if (String(islenmisVeri[r][colIdx]) !== selectedFilters[colIdx]) {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if (matches) {
+                rowElement.style.display = "";
+                visibleCount++;
+
+                hedefSutunlar.forEach((sutunHarf, colIdx) => {
+                    if (toplamSutunlari.includes(sutunHarf)) {
+                        let val = sayiyaCevir(islenmisVeri[r][colIdx]);
+                        if (val !== Infinity) {
+                            hesaplananToplamlar[colIdx] += val;
+                        }
+                    }
+                });
+            } else {
+                rowElement.style.display = "none";
+            }
+        }
+
+        document.getElementById('rowCount').innerText = visibleCount;
+        toplamSatiriniGuncelle();
+    }
+
+    function toplamSatiriniGuncelle() {
+        const tfoot = document.getElementById('tableFoot');
+        tfoot.innerHTML = "";
+
+        let footHtml = `<tr class="sum-row"><td>TOPLAM</td>`;
+        for (let c = 0; c < hedefSutunlar.length; c++) {
+            let sutunHarfi = hedefSutunlar[c];
+            if (toplamSutunlari.includes(sutunHarfi)) {
+                let toplamVal = hesaplananToplamlar[c] !== undefined ? hesaplananToplamlar[c] : 0;
+                let formattedVal = toplamVal.toLocaleString('tr-TR', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                footHtml += `<td>${formattedVal}</td>`;
+            } else {
+                footHtml += `<td class="text-muted small">-</td>`;
+            }
+        }
+        footHtml += "</tr>";
+        tfoot.innerHTML = footHtml;
+    }
+
+    function filtreleriTemizle() {
+        document.querySelectorAll('.header-filter-select').forEach(select => select.value = "");
+        tabloyuFiltrele();
+    }
+
+    function a1VerisiGuncelle(val) {
+        islenmisVeri[0][0] = val;
+    }
+
+    function excelIndir() {
+        if (!islenmisVeri.length) return;
+
+        let indirilecekVeri = [];
+        indirilecekVeri.push(islenmisVeri[0]); 
+        if (islenmisVeri.length > 1) {
+            indirilecekVeri.push(islenmisVeri[1]); 
+        }
+
+        const selects = document.querySelectorAll('.header-filter-select');
+        let selectedFilters = {};
+        selects.forEach(select => {
+            const colIndex = select.getAttribute('data-col');
+            let val = select.value;
+            if (val !== "") selectedFilters[colIndex] = val;
+        });
+
+        for (let r = 2; r < islenmisVeri.length; r++) {
+            let matches = true;
+            for (let colIdx in selectedFilters) {
+                if (String(islenmisVeri[r][colIdx]) !== selectedFilters[colIdx]) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                indirilecekVeri.push(islenmisVeri[r]);
+            }
+        }
+
+        let excelToplamSatiri = new Array(hedefSutunlar.length).fill("");
+        excelToplamSatiri[0] = "TOPLAM";
+
+        hedefSutunlar.forEach((sutunHarf, colIdx) => {
+            if (toplamSutunlari.includes(sutunHarf)) {
+                excelToplamSatiri[colIdx] = hesaplananToplamlar[colIdx] || 0;
+            }
+        });
+
+        indirilecekVeri.push(excelToplamSatiri);
+
+        const ws = XLSX.utils.aoa_to_sheet(indirilecekVeri);
+
+        const thinBorder = {
+            top: { style: "thin", color: { auto: 1 } },
+            bottom: { style: "thin", color: { auto: 1 } },
+            left: { style: "thin", color: { auto: 1 } },
+            right: { style: "thin", color: { auto: 1 } }
+        };
+
+        for (let rowIdx = 2; rowIdx < indirilecekVeri.length - 1; rowIdx++) {
+            hedefSutunlar.forEach((sutunHarfi, colIdx) => {
+                let cellAddress = XLSX.utils.encode_cell({ r: rowIdx, c: colIdx });
+                if (!ws[cellAddress]) ws[cellAddress] = { t: "s", v: "" };
+                ws[cellAddress].s = ws[cellAddress].s || {};
+                ws[cellAddress].s.border = thinBorder;
+            });
+        }
+
+        hedefSutunlar.forEach((sutunHarfi, colIdx) => {
+            let cellAddress = XLSX.utils.encode_cell({ r: 1, c: colIdx });
+            if (ws[cellAddress]) {
+                ws[cellAddress].s = ws[cellAddress].s || {};
+                ws[cellAddress].s.font = { bold: true };
+            }
+        });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Filtrelenmis_Veri");
+        XLSX.writeFile(wb, orijinalDosyaAdi);
+    }
+</script>
+
+</body>
+</html>
